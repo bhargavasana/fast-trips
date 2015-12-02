@@ -1170,6 +1170,280 @@ namespace fasttrips {
         } // end iteration through valid supply modes
     }
 
+    /**
+     * Return final probability total.  E.g. probability for child = end node
+     */
+    double PathFinder::addHyperpathTreeChildren(
+        const PathSpecification& path_spec,
+        std::ofstream& trace_file,
+        const StopStates& stop_states,
+        ProbabilityStopTreeNode& parent) const
+    {
+        double dir_factor       = path_spec.outbound_ ? 1 : -1;
+        int    end_state_id     = path_spec.outbound_ ? path_spec.destination_taz_id_ : path_spec.origin_taz_id_;
+        double final_prob       = 0.0;
+
+        // are there any possible children?
+        StopStates::const_iterator ss_iter = stop_states.find(parent.stop_id_);
+        if (ss_iter == stop_states.end()) { return 0; }
+
+        const std::vector<StopState>& stop_state = ss_iter->second;
+        if (stop_state.size() == 0) { return 0; }
+        double stop_label = stop_state.back().label_;
+
+        // get the previous link information
+        const StopState* parent_stop_state = NULL;
+        double arrdep_time = 0;
+        if (parent.level_ > 0) {
+            StopStates::const_iterator parent_iter = stop_states.find(parent.parent_stop_id_);
+            if (parent_iter == stop_states.end()) {
+                std::cerr << "This shouldn't happen." << std::endl;
+                std::cerr << "parent.parent_stop_id_ = " << parent.parent_stop_id_ << std::endl;
+                exit(2);
+            }
+            parent_stop_state = &(parent_iter->second[parent.index_]);
+            arrdep_time       = parent_stop_state->deparr_time_ + (parent_stop_state->link_time_*dir_factor);
+        }
+
+        for (size_t state_index = 0; state_index < stop_state.size(); ++state_index) {
+
+            if (parent_stop_state) {
+                // no double walk
+                if (path_spec.outbound_ &&
+                    ((stop_state[state_index].deparr_mode_ == MODE_EGRESS) || (stop_state[state_index].deparr_mode_ == MODE_TRANSFER)) &&
+                    ((     parent_stop_state->deparr_mode_ == MODE_ACCESS) || (     parent_stop_state->deparr_mode_ == MODE_TRANSFER))) { continue; }
+                if (!path_spec.outbound_ &&
+                    ((stop_state[state_index].deparr_mode_ == MODE_ACCESS) || (stop_state[state_index].deparr_mode_ == MODE_TRANSFER)) &&
+                    ((     parent_stop_state->deparr_mode_ == MODE_EGRESS) || (     parent_stop_state->deparr_mode_ == MODE_TRANSFER))) { continue; }
+                // don't double on the same trip ID - that's already covered by a single trip
+                if (stop_state[state_index].deparr_mode_ == MODE_TRANSIT && stop_state[state_index].trip_id_ == parent_stop_state->trip_id_) { continue; }
+
+
+                // outbound: we cannot depart before we arrive
+                if ( path_spec.outbound_ && stop_state[state_index].deparr_time_ < arrdep_time) { continue; }
+                // inbound: we cannot arrive after we depart
+                if (!path_spec.outbound_ && stop_state[state_index].deparr_time_ > arrdep_time) { continue; }
+            }
+
+            ProbabilityStopTreeNode child;
+            child.probability_      = exp(-1.0*STOCH_DISPERSION_*stop_state[state_index].cost_) /
+                                      exp(-1.0*STOCH_DISPERSION_*stop_label);
+            child.path_probability_ = parent.path_probability_ * child.probability_;
+            child.stop_id_          = stop_state[state_index].stop_succpred_;
+            child.parent_stop_id_   = parent.stop_id_;
+            child.index_            = state_index;
+            child.level_            = parent.level_ + 1;
+            parent.children_.push_back(child);
+
+            // Turning off this debug because it's pretty noisy
+            if (true && path_spec.trace_) {
+                if (parent_stop_state) {
+                    trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "parent   : ";
+                    printMode(trace_file, parent_stop_state->deparr_mode_, parent_stop_state->trip_id_);
+                    trace_file << std::endl;
+                    trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "arrdept  : ";
+                    printTime(trace_file, arrdep_time);
+                    trace_file << std::endl;
+                }
+                trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "stop     : " << stop_num_to_str_.find(child.stop_id_)->second << std::endl;
+                trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "mode     : ";
+                printMode(trace_file, stop_state[state_index].deparr_mode_, stop_state[state_index].trip_id_);
+                trace_file << std::endl;
+                if (stop_state[state_index].deparr_mode_ == MODE_TRANSIT) {
+                    trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "trip     : ";
+                    trace_file << trip_num_to_str_.find(stop_state[state_index].trip_id_)->second << std::endl;
+                }
+                trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "prob     : " << child.probability_ << std::endl;
+                trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "path_prob: " << child.path_probability_ << std::endl;
+            }
+
+            if (child.stop_id_ == end_state_id) {
+                final_prob += child.path_probability_;
+            } else {
+                // recurse
+                final_prob += addHyperpathTreeChildren(path_spec, trace_file, stop_states, parent.children_.back());
+            }
+        }
+        return final_prob;
+    }
+
+    void PathFinder::convertHyperpathTreeToPathList(
+        const PathSpecification& path_spec,
+        std::ofstream& trace_file,
+        const StopStates& stop_states,
+        ProbabilityStopTreeNode& node,
+        std::vector<Path>& path_list) const
+    {
+        if (false && path_spec.trace_) {
+            trace_file << "node " << node.stop_id_ << "; level = " << node.level_ << "; children size = " << node.children_.size();
+            trace_file << "; path_list size=" << path_list.size() << std::endl;
+        }
+        // if no children, done
+        if (node.children_.size() == 0) { return; }
+
+        // copy the last element
+        Path last_path = path_list.back();
+        // and delete it
+        path_list.pop_back();
+
+        // Iterate through children and push new paths on
+        const std::vector<StopState>& stop_state = stop_states.find(node.stop_id_)->second;
+        std::vector<ProbabilityStopTreeNode>::iterator node_iter;
+        for (node_iter = node.children_.begin(); node_iter != node.children_.end(); ++node_iter)
+        {
+            // make a copy
+            Path new_path = last_path;
+            // add child stop state
+            new_path.stops_.push_back(node.stop_id_);
+            new_path.states_[node.stop_id_] = stop_state[node_iter->index_];
+
+            path_list.push_back(new_path);
+            if (false && path_spec.trace_) {
+                printPath(trace_file, path_spec, new_path);
+                trace_file << "---" << std::endl;
+            }
+            convertHyperpathTreeToPathList(path_spec, trace_file, stop_states, *node_iter, path_list);
+        }
+    }
+
+    /**
+     * UPDATES to states
+     * Hyperpaths have some uncertainty built in which we need to rectify as we create concrete paths.
+     */
+    void PathFinder::updateHyperpathPath(
+        const PathSpecification& path_spec,
+        std::ofstream& trace_file,
+        Path& path) const 
+    {
+        for (size_t stop_index=1; stop_index<path.stops_.size(); ++stop_index) 
+        {
+            int prev_stop_id        = path.stops_[stop_index-1];
+            int current_stop_id     = path.stops_[stop_index];
+
+            StopState& prev_ss      = path.states_[prev_stop_id];
+            StopState& current_ss   = path.states_[current_stop_id];
+
+            // OUTBOUND: We are choosing links in chronological order.
+            if (path_spec.outbound_)
+            {
+                // Leave origin as late as possible
+                if (prev_ss.deparr_mode_ == MODE_ACCESS) {
+                    double dep_time = getScheduledDeparture(current_ss.trip_id_, current_stop_id, current_ss.seq_);
+                    // set departure time for the access link to perfectly catch the vehicle
+                    // todo: what if there is a wait queue?
+                    prev_ss.arrdep_time_ = dep_time;
+                    prev_ss.deparr_time_ = dep_time - prev_ss.link_time_;
+                    // no wait time for the trip
+                    current_ss.link_time_ = current_ss.arrdep_time_ - current_ss.deparr_time_;
+                }
+                // *Fix trip time*
+                else if (isTrip(current_ss.deparr_mode_)) {
+                    // link time is arrival time - previous arrival time
+                    current_ss.link_time_ = current_ss.arrdep_time_ - prev_ss.arrdep_time_;
+                }
+                // *Fix transfer times*
+                else if (current_ss.deparr_mode_ == MODE_TRANSFER) {
+                    current_ss.deparr_time_ = prev_ss.arrdep_time_;   // start transferring immediately
+                    current_ss.arrdep_time_ = current_ss.deparr_time_ + current_ss.link_time_;
+                }
+                // Egress: don't wait, just walk. Get to destination as early as possible
+                else if (current_ss.deparr_mode_ == MODE_EGRESS) {
+                    current_ss.deparr_time_ = prev_ss.arrdep_time_;
+                    current_ss.arrdep_time_ = current_ss.deparr_time_ + current_ss.link_time_;
+                }
+            }
+            // INBOUND: We are choosing links in REVERSE chronological order
+            else
+            {
+                // Leave origin as late as possible
+                if (current_ss.deparr_mode_ == MODE_ACCESS) {
+                    double dep_time = getScheduledDeparture(prev_ss.trip_id_, current_stop_id, prev_ss.seq_succpred_);
+                    // set arrival time for the access link to perfectly catch the vehicle
+                    // todo: what if there is a wait queue?
+                    current_ss.deparr_time_ = dep_time;
+                    current_ss.arrdep_time_ = current_ss.deparr_time_ - current_ss.link_time_;
+                    // no wait time for the trip
+                    prev_ss.link_time_ = prev_ss.deparr_time_ - prev_ss.arrdep_time_;
+                }
+                // *Fix trip time*: we are choosing in reverse so pretend the wait time is zero for now to
+                // accurately evaluate possible transfers in next choice.
+                else if (isTrip(current_ss.deparr_mode_)) {
+                    current_ss.link_time_ = current_ss.deparr_time_ - current_ss.arrdep_time_;
+                    // If we just picked this trip and the previous (next in time) is transfer then we know the wait now
+                    // and we can update the transfer and the trip with the real wait
+                    if (prev_ss.deparr_mode_ == MODE_TRANSFER) {
+                        // move transfer time so we do it right after arriving
+                        prev_ss.arrdep_time_ = current_ss.deparr_time_; // depart right away
+                        prev_ss.deparr_time_ = current_ss.deparr_time_ + prev_ss.link_time_; // arrive after walk
+                        // give the wait time to the previous trip
+                        prev_ss.link_time_ = prev_ss.deparr_time_ - prev_ss.deparr_time_;
+                    }
+                    // If the previous (next in time) is another trip (so zero-walk transfer) give it wait time
+                    else if (isTrip(prev_ss.deparr_mode_)) {
+                        prev_ss.link_time_ = prev_ss.deparr_time_ - current_ss.deparr_time_;
+                    }
+                }
+                // *Fix transfer depart/arrive times*: transfer as late as possible to preserve options for earlier trip
+                else if (current_ss.deparr_mode_ == MODE_TRANSFER) {
+                    current_ss.deparr_time_ = prev_ss.arrdep_time_;
+                    current_ss.arrdep_time_ = current_ss.deparr_time_ - current_ss.link_time_;
+                }
+                // Egress: don't wait, just walk. Get to destination as early as possible
+                if (prev_ss.deparr_mode_ == MODE_EGRESS) {
+                    prev_ss.arrdep_time_ = current_ss.deparr_time_;
+                    prev_ss.deparr_time_ = prev_ss.arrdep_time_ + prev_ss.link_time_;
+                }
+            }
+        }
+    }
+
+
+    void PathFinder::hyperpathGeneratePathList(
+        const PathSpecification& path_spec,
+        std::ofstream& trace_file,
+        const StopStates& stop_states,
+        std::vector<Path>& path_list) const
+    {
+        int    start_state_id   = path_spec.outbound_ ? path_spec.origin_taz_id_ : path_spec.destination_taz_id_;
+
+        ProbabilityStopTreeNode root;
+        root.probability_       = 1.0;
+        root.path_probability_  = 1.0;
+        root.stop_id_           = start_state_id;
+        root.parent_stop_id_    = -1;
+        root.index_             = 0;
+        root.level_             = 0;
+
+        if (path_spec.trace_) {
+            trace_file << std::endl;
+            trace_file << "Generating hyperpath pathset tree" << std::endl;
+        }
+
+        // First, create the tree
+        // total_prob = the sum of the leaf node path probabilities
+        // We could use this to scale back to one but the costs are probably not quite accurate
+        // because there are some costs we didn't know at the time.
+        double total_prob = addHyperpathTreeChildren(path_spec, trace_file, stop_states, root);
+
+        // Make this into a proper pathset
+        // Seed it with a single empty path
+        Path empty_path;
+        path_list.push_back(empty_path);
+        convertHyperpathTreeToPathList(path_spec, trace_file, stop_states, root, path_list);
+        
+        if (path_spec.trace_) {
+            trace_file << "Path list size = " << path_list.size() << std::endl;
+        }
+
+        // update the paths
+        for (std::vector<Path>::iterator path_iter = path_list.begin(); path_iter != path_list.end(); ++path_iter) {
+            updateHyperpathPath(path_spec, trace_file, *path_iter);
+            if (path_spec.trace_) {
+                printPath(trace_file, path_spec, *path_iter);
+                trace_file << "***" << std::endl;
+            }
+        }
+    }
 
     bool PathFinder::hyperpathGeneratePath(
         const PathSpecification& path_spec,
@@ -1179,7 +1453,7 @@ namespace fasttrips {
     {
         int    start_state_id   = path_spec.outbound_ ? path_spec.origin_taz_id_ : path_spec.destination_taz_id_;
         double dir_factor       = path_spec.outbound_ ? 1 : -1;
-        
+
         const std::vector<StopState>& taz_state = stop_states.find(start_state_id)->second;
         double taz_label        = taz_state.back().label_;
         int    cost_cutoff      = 1;
@@ -1573,6 +1847,7 @@ namespace fasttrips {
         }
 
         if (path_spec.trace_) {
+            trace_file << " ==================================================> cost: " << path_info.cost_ << std::endl;
             printPath(trace_file, path_spec, path);
             trace_file << std::endl;
         }
@@ -1594,45 +1869,21 @@ namespace fasttrips {
 
         if (path_spec.hyperpath_)
         {
-            // find a bunch!
-            PathSet paths, paths_updated_cost;
-            // random seed
-            srand(path_spec.path_id_);
-            // find a *set of Paths*
-            for (int attempts = 1; attempts <= STOCH_PATHSET_SIZE_; ++attempts)
-            {
-                Path new_path;
-                bool path_found = hyperpathGeneratePath(path_spec, trace_file, stop_states, new_path);
+            // find the list of paths
+            std::vector<Path> path_list;
+            hyperpathGeneratePathList(path_spec, trace_file, stop_states, path_list);
 
-                if (path_found) {
-                    if (path_spec.trace_) {
-                        trace_file << "----> Found path " << attempts << " ";
-                        printPathCompat(trace_file, path_spec, new_path);
-                        trace_file << std::endl;
-                        printPath(trace_file, path_spec, new_path);
-                        trace_file << std::endl;
-                    }
-                    // do we already have this?  if so, increment
-                    PathSet::iterator paths_iter = paths.find(new_path);
-                    if (paths_iter != paths.end()) {
-                        paths_iter->second.count_ += 1;
-                    } else {
-                        PathInfo pi = { 1, 0, false, 0, 0 };  // count is 1
-                        paths[new_path] = pi;
-                    }
-                    if (path_spec.trace_) { trace_file << "paths size = " << paths.size() << std::endl; }
-                }
-            }
+            PathSet paths_updated_cost;
+
             // calculate the costs for those paths and the logsum
             double logsum = 0;
-            for (PathSet::iterator paths_iter = paths.begin(); paths_iter != paths.end(); ++paths_iter)
+            for (std::vector<Path>::iterator paths_iter = path_list.begin(); 
+                 paths_iter != path_list.end(); ++paths_iter)
             {
-                // updated cost version
-                Path     path_updated     = paths_iter->first;
-                PathInfo pathinfo_updated = paths_iter->second;
-                calculatePathCost(path_spec, trace_file, path_updated, pathinfo_updated);
-                // save it into the new map
-                paths_updated_cost[path_updated] = pathinfo_updated;
+                // save path, pathinfo into map
+                Path      path_updated     = *paths_iter;
+                PathInfo& pathinfo_updated = paths_updated_cost[path_updated];
+                calculatePathCost(path_spec, trace_file, *paths_iter, pathinfo_updated);
                 if (pathinfo_updated.cost_ > 0)
                 {
                     logsum += exp(-1.0*STOCH_DISPERSION_*pathinfo_updated.cost_);
@@ -1646,25 +1897,26 @@ namespace fasttrips {
             // calculate the probabilities for those paths
             for (PathSet::iterator paths_iter = paths_updated_cost.begin(); paths_iter != paths_updated_cost.end(); ++paths_iter)
             {
+
                 paths_iter->second.probability_ = exp(-1.0*STOCH_DISPERSION_*paths_iter->second.cost_)/logsum;
-                // why?  :p
                 int prob_i = static_cast<int>(RAND_MAX*paths_iter->second.probability_);
+
+                if (path_spec.trace_)
+                {
+                    trace_file << "-> probability " << std::setfill(' ') << std::setw(8) << paths_iter->second.probability_;
+                    trace_file << "; prob_i "       << std::setw(8) << prob_i;
+                    trace_file << "; cost "         << std::setw(8) << paths_iter->second.cost_;
+                    trace_file << "; cap bad? "     << std::setw(2) << paths_iter->second.capacity_problem_;
+                    trace_file << "   ";
+                    printPathCompat(trace_file, path_spec, paths_iter->first);
+                    trace_file << std::endl;
+                }
+
                 // too small to consider
                 if (prob_i < cost_cutoff) { continue; }
                 cum_prob += prob_i;
                 paths_iter->second.prob_i_ = cum_prob;
 
-                if (path_spec.trace_)
-                {
-                    trace_file << "-> probability " << std::setfill(' ') << std::setw(8) << paths_iter->second.probability_;
-                    trace_file << "; prob_i " << std::setw(8) << paths_iter->second.prob_i_;
-                    trace_file << "; count " << std::setw(4) << paths_iter->second.count_;
-                    trace_file << "; cost " << std::setw(8) << paths_iter->second.cost_;
-                    trace_file << "; cap bad? " << std::setw(2) << paths_iter->second.capacity_problem_;
-                    trace_file << "   ";
-                    printPathCompat(trace_file, path_spec, paths_iter->first);
-                    trace_file << std::endl;
-                }
             }
             if (cum_prob == 0) { return false; } // fail
 
@@ -1861,9 +2113,9 @@ namespace fasttrips {
             if ( board_stops.length() > 0) {  board_stops += ","; }
             if (       trips.length() > 0) {        trips += ","; }
             if (alight_stops.length() > 0) { alight_stops += ","; }
-            board_stops  += "s" + (path_spec.outbound_ ? SSTR(stop_id) : SSTR(psi->second.stop_succpred_));
-            trips        += "t" + SSTR(psi->second.trip_id_);
-            alight_stops += "s" + (path_spec.outbound_ ? SSTR(psi->second.stop_succpred_) : SSTR(stop_id));
+            board_stops  += (path_spec.outbound_ ? stop_num_to_str_.find(stop_id)->second : stop_num_to_str_.find(psi->second.stop_succpred_)->second);
+            trips        += trip_num_to_str_.find(psi->second.trip_id_)->second;
+            alight_stops += (path_spec.outbound_ ? stop_num_to_str_.find(psi->second.stop_succpred_)->second : stop_num_to_str_.find(stop_id)->second);
         }
         ostr << " " << board_stops << " " << trips << " " << alight_stops;
     }

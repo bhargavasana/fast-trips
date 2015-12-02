@@ -172,10 +172,20 @@ namespace fasttrips {
     /// Structure used in PathFinder::hyperpathChoosePath
     typedef struct {
         double  probability_;           ///< Probability of this stop
-        int     prob_i_;                ///< Cumulative probability * 1000
+        int     prob_i_;                ///< Cumulative probability * RAND_MAX
         int     stop_id_;               ///< Stop ID
         size_t  index_;                 ///< Index into StopState vector (or taz state vector)
     } ProbabilityStop;
+
+    typedef struct prob_stop_tree_node {
+        double  probability_;           ///< Probability of this stop given parent node is chosen
+        double  path_probability_;      ///< probability_ * parent's path_probability_
+        int     stop_id_;               ///< Stop ID
+        int     parent_stop_id_;        ///< Stop ID of parent (prev)
+        size_t  index_;                 ///< Index into parent's StopState vector (or taz state vector)
+        int     level_;                 ///< level in the tree
+        std::vector<prob_stop_tree_node> children_; ///< Tree children!
+    } ProbabilityStopTreeNode;
 
     /// Comparator to enable the fasttrips::LabelStopQueue to return the lowest labeled stop.
     struct LabelStopCompare {
@@ -207,7 +217,6 @@ namespace fasttrips {
 
     /** In stochastic path finding, this is the information we'll collect about the path. */
     typedef struct {
-        int     count_;                         ///< Number of times this path was generated (for stochastic)
         double  cost_;                          ///< Cost of this path
         bool    capacity_problem_;              ///< Does this path have a capacity problem?
         double  probability_;                   ///< Probability of this stop          (for stochastic)
@@ -387,12 +396,36 @@ namespace fasttrips {
                                   StopStates& stop_states) const;
 
         /**
+         * Recursive algorithm which generates a stop state tree given the labeled stop states.
+         */
+        double addHyperpathTreeChildren(const PathSpecification& path_spec,
+                                        std::ofstream& trace_file,
+                                        const StopStates& stop_states,
+                                        ProbabilityStopTreeNode& parent) const;
+
+
+        /**
          * Given all the labeled stops and taz, traces back and generates a
          * specific path.  We do this by setting up probabilities for each
          * option and then choosing via PathFinder::chooseState.
          *
          * @return success
          */
+        void convertHyperpathTreeToPathList(const PathSpecification& path_spec,
+                                           std::ofstream& trace_file,
+                                           const StopStates& stop_states,
+                                           ProbabilityStopTreeNode& node,
+                                           std::vector<Path>& path_list) const;
+
+        void updateHyperpathPath(const PathSpecification& path_spec,
+                                 std::ofstream& trace_file,
+                                 Path& path) const;
+
+        void hyperpathGeneratePathList(const PathSpecification& path_spec,
+                                      std::ofstream& trace_file,
+                                      const StopStates& stop_states,
+                                      std::vector<Path>& path_list) const;
+
         bool hyperpathGeneratePath(const PathSpecification& path_spec,
                                   std::ofstream& trace_file,
                                   const StopStates& stop_states,

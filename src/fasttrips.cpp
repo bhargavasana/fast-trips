@@ -115,7 +115,7 @@ _fasttrips_find_path(PyObject *self, PyObject *args)
     path_spec.egress_mode_ = egress_mode;
 
     fasttrips::Path path;
-    fasttrips::PathInfo path_info = {0, 0, false, 0, 0};
+    fasttrips::PathInfo path_info = {0, false, 0, 0};
     pathfinder.findPath(path_spec, path, path_info);
 
     // package for returning.  We'll separate ints and doubles.
