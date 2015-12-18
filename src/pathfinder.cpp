@@ -1171,6 +1171,9 @@ namespace fasttrips {
     }
 
     /**
+     * For outbound, start at the origin and go forward in time.
+     * For inbound,  start at the destination and go backward in time.
+     *
      * Return final probability total.  E.g. probability for child = end node
      */
     double PathFinder::addHyperpathTreeChildren(
@@ -1205,9 +1208,21 @@ namespace fasttrips {
             arrdep_time       = parent_stop_state->deparr_time_ + (parent_stop_state->link_time_*dir_factor);
         }
 
+        // iterate through the children
         for (size_t state_index = 0; state_index < stop_state.size(); ++state_index) {
 
             if (parent_stop_state) {
+                if (path_spec.trace_) {
+                    trace_file << std::setw(parent.level_*2 + 6) << std::setfill(' ') << " * " << "looking at ";
+                    printMode(trace_file, stop_state[state_index].deparr_mode_, stop_state[state_index].trip_id_);
+                    if (stop_state[state_index].deparr_mode_ == MODE_TRANSIT) {
+                       trace_file << " (" << trip_num_to_str_.find(stop_state[state_index].trip_id_)->second << ") ";
+                       printTime(trace_file, arrdep_time);
+                       trace_file << "  ";
+                       printTime(trace_file, stop_state[state_index].deparr_time_);
+                    }
+                    trace_file << std::endl;
+                }
                 // no double walk
                 if (path_spec.outbound_ &&
                     ((stop_state[state_index].deparr_mode_ == MODE_EGRESS) || (stop_state[state_index].deparr_mode_ == MODE_TRANSFER)) &&
@@ -1237,24 +1252,14 @@ namespace fasttrips {
 
             // Turning off this debug because it's pretty noisy
             if (true && path_spec.trace_) {
-                if (parent_stop_state) {
-                    trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "parent   : ";
-                    printMode(trace_file, parent_stop_state->deparr_mode_, parent_stop_state->trip_id_);
-                    trace_file << std::endl;
-                    trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "arrdept  : ";
-                    printTime(trace_file, arrdep_time);
-                    trace_file << std::endl;
-                }
-                trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "stop     : " << stop_num_to_str_.find(child.stop_id_)->second << std::endl;
-                trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "mode     : ";
-                printMode(trace_file, stop_state[state_index].deparr_mode_, stop_state[state_index].trip_id_);
+                trace_file << std::setw(child.level_*2 + 4) << std::setfill(' ') << " * " << " ";
+                printStopStateHeader(trace_file, path_spec);
                 trace_file << std::endl;
-                if (stop_state[state_index].deparr_mode_ == MODE_TRANSIT) {
-                    trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "trip     : ";
-                    trace_file << trip_num_to_str_.find(stop_state[state_index].trip_id_)->second << std::endl;
-                }
-                trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "prob     : " << child.probability_ << std::endl;
-                trace_file << std::setw(child.level_*2 + 8) << std::setfill(' ') << "path_prob: " << child.path_probability_ << std::endl;
+                trace_file << std::setw(child.level_*2 + 4) << std::setfill(' ') << " * " << " ";
+                printStopState(trace_file, parent.stop_id_, stop_state[state_index], path_spec);
+                trace_file << std::endl;
+                trace_file << std::setw(child.level_*2 + 4) << std::setfill(' ') << " * " << "prob     : " << child.probability_ << std::endl;
+                trace_file << std::setw(child.level_*2 + 4) << std::setfill(' ') << " * " << "path_prob: " << child.path_probability_ << std::endl;
             }
 
             if (child.stop_id_ == end_state_id) {
@@ -1500,7 +1505,7 @@ namespace fasttrips {
         int     current_stop_id = ss.stop_succpred_;
         // outbound: arrival time
         //  inbound: departure time
-        double  arrdep_time     = ss.deparr_time_ + (ss.link_time_*dir_factor);
+        double  arrdep_time     = (ss.deparr_mode_ == MODE_TRANSIT ? ss.arrdep_time_ : ss.deparr_time_ + (ss.link_time_*dir_factor));
         int     prev_mode       = ss.deparr_mode_;
         int     prev_trip_id    = ss.trip_id_;
         int     prev_stop_id    = start_state_id;
