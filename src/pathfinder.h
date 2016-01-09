@@ -183,8 +183,10 @@ namespace fasttrips {
         double  probability_;           ///< Probability of this stop given parent node is chosen
         double  path_probability_;      ///< probability_ * parent's path_probability_
         int     stop_id_;               ///< Stop ID
-        int     parent_stop_id_;        ///< Stop ID of parent (prev)
-        size_t  index_;                 ///< Index into parent's StopState vector (or taz state vector)
+
+        prob_stop_tree_node* parent_;      ///< Parent node (prev)
+        StopState            stop_state_;  ///< StopState for this path
+
         int     level_;                 ///< level in the tree
         std::vector<prob_stop_tree_node> children_; ///< Tree children!
     } ProbabilityStopTreeNode;
