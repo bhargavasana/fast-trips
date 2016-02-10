@@ -204,7 +204,7 @@ class Trip:
                 except:
                     pass
                 try:
-                    top_time_dict[Trip.STOPTIMES_COLUMN_DROP_OFF_TYPE]        = gtfs_stop_time.drop_off_type
+                    stop_time_dict[Trip.STOPTIMES_COLUMN_DROP_OFF_TYPE]        = gtfs_stop_time.drop_off_type
                 except:
                     pass
                 try:
@@ -312,11 +312,9 @@ class Trip:
 
         # datetime version
         self.stop_times_df[Trip.STOPTIMES_COLUMN_ARRIVAL_TIME] = \
-            self.stop_times_df[Trip.STOPTIMES_COLUMN_ARRIVAL_TIME].map(lambda x: \
-                datetime.datetime.combine(today, datetime.datetime.strptime(x, '%H:%M:%S').time()))
+            self.stop_times_df[Trip.STOPTIMES_COLUMN_ARRIVAL_TIME].map(lambda x: Util.read_time(x))
         self.stop_times_df[Trip.STOPTIMES_COLUMN_DEPARTURE_TIME] = \
-            self.stop_times_df[Trip.STOPTIMES_COLUMN_DEPARTURE_TIME].map(lambda x: \
-                datetime.datetime.combine(today, datetime.datetime.strptime(x, '%H:%M:%S').time()))
+            self.stop_times_df[Trip.STOPTIMES_COLUMN_DEPARTURE_TIME].map(lambda x: Util.read_time(x))
 
         # float version
         self.stop_times_df[Trip.STOPTIMES_COLUMN_ARRIVAL_TIME_MIN] = \
@@ -419,6 +417,12 @@ class Trip:
 
         trips_df.drop(valid_drop_fields, axis=1, inplace=1)
 
+        # only pass on numeric columns -- for now, drop the rest
+        FastTripsLogger.debug("Dropping non-numeric trip info")
+        FastTripsLogger.debug(str(trips_df.head()))
+        trips_df = trips_df.select_dtypes(exclude=['object'])
+        FastTripsLogger.debug(str(trips_df.head()))
+
         # the index is the trip_id_num
         trips_df.set_index(Trip.TRIPS_COLUMN_TRIP_ID_NUM, inplace=True)
         # this will make it so beyond trip id num
@@ -461,23 +465,37 @@ class Trip:
         Returns :py:class:`pandas.DataFrame` with `headway` column added.
         """
         # what if direction_id isn't specified
-        stop_group = trips_df[[Trip.STOPTIMES_COLUMN_STOP_ID,
-                               Trip.TRIPS_COLUMN_ROUTE_ID,
-                               Trip.TRIPS_COLUMN_DIRECTION_ID,
-                               Trip.STOPTIMES_COLUMN_DEPARTURE_TIME,
-                               Trip.STOPTIMES_COLUMN_TRIP_ID,
-                               Trip.STOPTIMES_COLUMN_STOP_SEQUENCE]].groupby([Trip.STOPTIMES_COLUMN_STOP_ID,
-                                                                             Trip.TRIPS_COLUMN_ROUTE_ID,
-                                                                             Trip.TRIPS_COLUMN_DIRECTION_ID])
+        has_direction_id = Trip.TRIPS_COLUMN_DIRECTION_ID in trips_df.columns.values
+
+        if has_direction_id:
+            stop_group = trips_df[[Trip.STOPTIMES_COLUMN_STOP_ID,
+                                   Trip.TRIPS_COLUMN_ROUTE_ID,
+                                   Trip.TRIPS_COLUMN_DIRECTION_ID,
+                                   Trip.STOPTIMES_COLUMN_DEPARTURE_TIME,
+                                   Trip.STOPTIMES_COLUMN_TRIP_ID,
+                                   Trip.STOPTIMES_COLUMN_STOP_SEQUENCE]].groupby([Trip.STOPTIMES_COLUMN_STOP_ID,
+                                                                                 Trip.TRIPS_COLUMN_ROUTE_ID,
+                                                                                 Trip.TRIPS_COLUMN_DIRECTION_ID])
+        else:
+            stop_group = trips_df[[Trip.STOPTIMES_COLUMN_STOP_ID,
+                                   Trip.TRIPS_COLUMN_ROUTE_ID,
+                                   Trip.STOPTIMES_COLUMN_DEPARTURE_TIME,
+                                   Trip.STOPTIMES_COLUMN_TRIP_ID,
+                                   Trip.STOPTIMES_COLUMN_STOP_SEQUENCE]].groupby([Trip.STOPTIMES_COLUMN_STOP_ID,
+                                                                                 Trip.TRIPS_COLUMN_ROUTE_ID])
 
         stop_group_df = stop_group.apply(lambda x: x.sort(Trip.STOPTIMES_COLUMN_DEPARTURE_TIME))
         # set headway, in minutes
         stop_group_shift_df = stop_group_df.shift()
         stop_group_df['headway'] = (stop_group_df[Trip.STOPTIMES_COLUMN_DEPARTURE_TIME] - stop_group_shift_df[Trip.STOPTIMES_COLUMN_DEPARTURE_TIME])/numpy.timedelta64(1,'m')
         # zero out the first in each group
-        stop_group_df.loc[(stop_group_df.stop_id     !=stop_group_shift_df.stop_id     )|
-                          (stop_group_df.route_id    !=stop_group_shift_df.route_id    )|
-                          (stop_group_df.direction_id!=stop_group_shift_df.direction_id), 'headway'] = Trip.DEFAULT_HEADWAY
+        if has_direction_id:
+            stop_group_df.loc[(stop_group_df.stop_id     !=stop_group_shift_df.stop_id     )|
+                              (stop_group_df.route_id    !=stop_group_shift_df.route_id    )|
+                              (stop_group_df.direction_id!=stop_group_shift_df.direction_id), 'headway'] = Trip.DEFAULT_HEADWAY
+        else:
+            stop_group_df.loc[(stop_group_df.stop_id     !=stop_group_shift_df.stop_id     )|
+                              (stop_group_df.route_id    !=stop_group_shift_df.route_id    ), 'headway'] = Trip.DEFAULT_HEADWAY
         # print stop_group_df
 
         trips_df_len = len(trips_df)
