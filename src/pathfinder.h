@@ -441,11 +441,6 @@ namespace fasttrips {
                                       const StopStates& stop_states,
                                       std::vector<Path>& path_list) const;
 
-        bool hyperpathGeneratePath(const PathSpecification& path_spec,
-                                  std::ofstream& trace_file,
-                                  const StopStates& stop_states,
-                                  Path& path) const;
-
         /**
          * Given a set of paths, randomly selects one based on the cumulative
          * probability (fasttrips::PathInfo.prob_i_)
@@ -456,16 +451,6 @@ namespace fasttrips {
                         std::ofstream& trace_file,
                         PathSet& paths,
                         int max_prob_i) const;
-        /**
-         * Given a vector of fasttrips::ProbabilityStop instances,
-         * randomly selects one based on the cumulative probability
-         * (fasttrips::ProbabilityStop.prob_i_)
-         *
-         * @return the index_ from chosen ProbabilityStop.
-         */
-        size_t chooseState(const PathSpecification& path_spec,
-                                  std::ofstream& trace_file,
-                                  const std::vector<ProbabilityStop>& prob_stops) const;
 
         /** Calculates the cost for the entire given path, and checks for capacity issues.
          *  Sets the results into the given fasttrips::PathInfo instance.
