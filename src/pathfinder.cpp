@@ -1285,9 +1285,18 @@ namespace fasttrips {
         const StopStates& stop_states,
         ProbabilityStopTreeNode& current) const
     {
+        // todo make this configurable?  also max length transit trip?
+        static int    MAX_LEVEL        = 7; // access/egress 5 transit/transfer links
+        static double PROB_CUTOFF      = 0.0001;  // 0.001 too small for path prob
+        static double PATH_PROB_CUTOFF = 0.0001;
+
         double dir_factor       = path_spec.outbound_ ? 1 : -1;
         int    end_state_id     = path_spec.outbound_ ? path_spec.destination_taz_id_ : path_spec.origin_taz_id_;
         double final_prob       = 0.0;
+
+        if (current.level_ > MAX_LEVEL) {
+            return current.path_probability_;
+        }
 
         // are there any possible children?
         StopStates::const_iterator ss_iter = stop_states.find(current.stop_id_);
@@ -1296,6 +1305,33 @@ namespace fasttrips {
         const std::vector<StopState>& stop_state = ss_iter->second;
         if (stop_state.size() == 0) { return 0; }
         double stop_label = stop_state.back().label_;
+
+        // DEBUG: print the path up to here
+        if (false && path_spec.trace_ && current.level_ > 0) {
+            trace_file << std::setw(current.level_*2 + 3) << std::setfill(' ') << "+";
+            trace_file << "Path so far..." << std::endl;
+            trace_file << std::setw(current.level_*2 + 3) << std::setfill(' ') << "+";
+            printStopStateHeader(trace_file, path_spec);
+            trace_file << std::endl;
+            ProbabilityStopTreeNode* pstn = &current;
+            while (pstn != NULL && pstn->level_ > 0) {
+                trace_file << std::setw(current.level_*2 + 3) << std::setfill(' ') << "+";
+                printStopState(trace_file, pstn->parent_->stop_id_, pstn->stop_state_, path_spec);
+                trace_file << std::endl;
+                pstn = pstn->parent_;
+            }
+            trace_file << std::setw(current.level_*2 + 3) << std::setfill(' ') << "+";
+            trace_file << "-------------" << std::endl;
+        }
+        // DEBUG: print the states at this stop
+        if (false && path_spec.trace_) {
+            printStopStateHeader(trace_file, path_spec);
+            trace_file << std::endl;
+            for (size_t state_index = 0; state_index < stop_state.size(); ++state_index) {
+                printStopState(trace_file, current.stop_id_, stop_state[state_index], path_spec);
+                trace_file << std::endl;
+            }
+        }
 
         // iterate through the children
         for (size_t state_index = 0; state_index < stop_state.size(); ++state_index) {
@@ -1310,7 +1346,7 @@ namespace fasttrips {
             child.path_probability_ = current.path_probability_ * child.probability_;
             child.level_            = current.level_ + 1;
 
-            if (path_spec.trace_) {
+            if (false && path_spec.trace_) {
                 trace_file << std::setw(current.level_*2 + 3) << std::setfill(' ') << current.level_ << " looking at ";
                 printMode(trace_file, child.stop_state_.deparr_mode_, child.stop_state_.trip_id_);
                 if (child.stop_state_.deparr_mode_ == MODE_TRANSIT) {
@@ -1319,8 +1355,13 @@ namespace fasttrips {
                    trace_file << "  ";
                    printTime(trace_file, child.stop_state_.deparr_time_);
                 }
+                trace_file << " to " << child.stop_state_.stop_succpred_;
+                trace_file << "  prob=" << child.probability_ << "  path_prob=" << child.path_probability_;
                 trace_file << std::endl;
             }
+
+            if (child.probability_      < PROB_CUTOFF     ) { continue; }
+            if (child.path_probability_ < PATH_PROB_CUTOFF) { continue; }
 
             if (current.level_ > 0) {
 
@@ -1336,10 +1377,12 @@ namespace fasttrips {
                         child.stop_state_.trip_id_     == current.stop_state_.trip_id_) { continue; }
 
 
-                // outbound: we cannot depart before we arrive
-                if ( path_spec.outbound_ && child.stop_state_.deparr_time_ < current.stop_state_.arrdep_time_) { continue; }
-                // inbound: we cannot arrive after we depart
-                if (!path_spec.outbound_ && child.stop_state_.deparr_time_ > current.stop_state_.arrdep_time_) { continue; }
+                if (isTrip(child.stop_state_.deparr_mode_)) {
+                    // outbound: we cannot depart before we arrive
+                    if ( path_spec.outbound_ && child.stop_state_.deparr_time_ < current.stop_state_.arrdep_time_) { continue; }
+                    // inbound: we cannot arrive after we depart
+                    if (!path_spec.outbound_ && child.stop_state_.deparr_time_ > current.stop_state_.arrdep_time_) { continue; }
+                }
 
                 // UPDATES to states
                 // Hyperpaths have some uncertainty built in which we need to rectify as we go through and choose
