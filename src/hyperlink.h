@@ -27,7 +27,7 @@ namespace fasttrips {
     /// Hyperpath cost when no links are there
     const double MAX_COST = 999999;
     /// Hyperpath minimum cost
-    const double MIN_COST = -5.0;
+    //const double MIN_COST = -100.0;
 
     bool isTrip(const int& mode);
 
