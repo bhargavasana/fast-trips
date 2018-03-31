@@ -298,6 +298,17 @@ namespace fasttrips {
             return false;
         }
 
+        // ========= check if there are already "enough" hyperlinks =========
+        if ((linkset.stop_state_map_.size() >= 10) && (ss.cost_ >= linkset.cost_map_.rbegin()->first)) {
+        	// log it
+			if (path_spec.trace_) {
+				trace_file << "  + new ";
+				Hyperlink::printStopState(trace_file, stop_id_, ss, path_spec, pf);
+				trace_file << " (hyperlinklimit-reject)" << std::endl;
+			}
+        	return false;
+        }
+
         // ========= now it's definitely going in =========
 
         bool update_state = false;
@@ -308,14 +319,33 @@ namespace fasttrips {
         if (result_l.second == true) {
             std::string notes;
 
+            if (linkset.stop_state_map_.size() >= 11) {
+            	StopStateKey remssk = linkset.cost_map_.rbegin()->second;
+            	linkset.sum_exp_cost_ -= exp(-1.0*linkset.stop_state_map_[remssk].cost_/STOCH_DISPERSION_);
+            	linkset.stop_state_map_.erase(remssk);
+            	for (CostToStopState::iterator iter = linkset.cost_map_.begin(); iter != linkset.cost_map_.end(); ++iter) {
+            		if (iter->second == remssk) {
+            			linkset.cost_map_.erase(iter);
+            		}
+            	}
+
+            	// if the the latest_dep_earliest_arr_ were set to the previous value, we need to check
+				if (linkset.lder_ssk_ == remssk)
+				{
+					if (path_spec.trace_) { trace_file << "Resetting lder" << std::endl; }
+					resetLatestDepartureEarliestArrival(isTrip(remssk.deparr_mode_), path_spec);
+				}
+
+            }
             linkset.cost_map_.insert (std::pair<double, StopStateKey>(ss.cost_,ssk));
+
 
             // check if the window is updated -- this is a state update
             if ((!is_last_link) &&
                 (( path_spec.outbound_ && (ss.deparr_time_ > linkset.latest_dep_earliest_arr_)) ||
                  (!path_spec.outbound_ && (ss.deparr_time_ < linkset.latest_dep_earliest_arr_))))
             {
-                linkset.latest_dep_earliest_arr_  = ss.deparr_time_;
+            	linkset.latest_dep_earliest_arr_  = ss.deparr_time_;
                 linkset.lder_ssk_                 = ssk;
                 update_state                      = true;
                 notes                            += " (window)";
@@ -351,63 +381,66 @@ namespace fasttrips {
         }
 
         // ========= the key is in already in here so replace the values =========
-        std::string notes(" (sub)");
 
-        // update the cost map
-        removeFromCostMap(ssk, linkset.stop_state_map_[ssk]);
-        linkset.cost_map_.insert (std::pair<double, StopStateKey>(ss.cost_,ssk));
+        if (ss.cost_ < linkset.stop_state_map_[ssk].cost_) {
+        	std::string notes(" (sub)");
 
-        // update the cost
-        linkset.sum_exp_cost_ -= exp(-1.0*linkset.stop_state_map_[ssk].cost_/STOCH_DISPERSION_);
+			// update the cost map
+			removeFromCostMap(ssk, linkset.stop_state_map_[ssk]);
+			linkset.cost_map_.insert (std::pair<double, StopStateKey>(ss.cost_,ssk));
 
-        // we're replacing the stopstate so delete the old path
-        if (linkset.stop_state_map_[ssk].low_cost_path_) {
-            delete linkset.stop_state_map_[ssk].low_cost_path_;
-            linkset.stop_state_map_[ssk].low_cost_path_ = NULL;
-        }
-        // and the other state elements
-        linkset.stop_state_map_[ssk] = ss;
-        // stop_state_map_[ssk].iteration_ = old_iteration; // remove this
-        linkset.sum_exp_cost_ += exp(-1.0*ss.cost_/STOCH_DISPERSION_);
+			// update the cost
+			linkset.sum_exp_cost_ -= exp(-1.0*linkset.stop_state_map_[ssk].cost_/STOCH_DISPERSION_);
 
-        // if the the latest_dep_earliest_arr_ were set to the previous value, we need to check
-        if (linkset.lder_ssk_ == ssk)
-        {
-            if (path_spec.trace_) { trace_file << "Resetting lder" << std::endl; }
-            resetLatestDepartureEarliestArrival(isTrip(ssk.deparr_mode_), path_spec);
-        }
+			// we're replacing the stopstate so delete the old path
+			if (linkset.stop_state_map_[ssk].low_cost_path_) {
+				delete linkset.stop_state_map_[ssk].low_cost_path_;
+				linkset.stop_state_map_[ssk].low_cost_path_ = NULL;
+			}
+			// and the other state elements
+			linkset.stop_state_map_[ssk] = ss;
+			// stop_state_map_[ssk].iteration_ = old_iteration; // remove this
+			linkset.sum_exp_cost_ += exp(-1.0*ss.cost_/STOCH_DISPERSION_);
 
-        // check if the window is updated -- this is a state update
-        if ((!is_last_link) &&
-            (( path_spec.outbound_ && (ss.deparr_time_ > linkset.latest_dep_earliest_arr_)) ||
-             (!path_spec.outbound_ && (ss.deparr_time_ < linkset.latest_dep_earliest_arr_))))
-        {
-            linkset.latest_dep_earliest_arr_  = ss.deparr_time_;
-            linkset.lder_ssk_                 = ssk;
-            update_state                      = true;
-            notes                            += " (window)";
-            // if the window changes, we need to prune states out of bounds -- this recalculates sum_exp_cost_
-            pruneWindow(trace_file, path_spec, pf, isTrip(ssk.deparr_mode_));
-        }
+			// if the the latest_dep_earliest_arr_ were set to the previous value, we need to check
+			if (linkset.lder_ssk_ == ssk)
+			{
+				if (path_spec.trace_) { trace_file << "Resetting lder" << std::endl; }
+				resetLatestDepartureEarliestArrival(isTrip(ssk.deparr_mode_), path_spec);
+			}
 
-        double hyperpath_cost  = (-1.0*STOCH_DISPERSION_)*log(linkset.sum_exp_cost_);
-        if (abs(hyperpath_cost - linkset.hyperpath_cost_) > 0.0001)
-        {
-            std::ostringstream oss;
-            oss << " (hp cost " << std::setprecision(6) << std::fixed << linkset.hyperpath_cost_ << "->" << hyperpath_cost << ")";
-            notes                   += oss.str();
-            update_state             = true;
-            linkset.hyperpath_cost_  = hyperpath_cost;
-        }
+			// check if the window is updated -- this is a state update
+			if ((!is_last_link) &&
+				(( path_spec.outbound_ && (ss.deparr_time_ > linkset.latest_dep_earliest_arr_)) ||
+				 (!path_spec.outbound_ && (ss.deparr_time_ < linkset.latest_dep_earliest_arr_))))
+			{
+				linkset.latest_dep_earliest_arr_  = ss.deparr_time_;
+				linkset.lder_ssk_                 = ssk;
+				update_state                      = true;
+				notes                            += " (window)";
+				// if the window changes, we need to prune states out of bounds -- this recalculates sum_exp_cost_
+				pruneWindow(trace_file, path_spec, pf, isTrip(ssk.deparr_mode_));
+			}
 
-        // updating probabilities
-        setupProbabilities(path_spec, trace_file, pf, isTrip(ssk.deparr_mode_));
+			double hyperpath_cost  = (-1.0*STOCH_DISPERSION_)*log(linkset.sum_exp_cost_);
+			if (abs(hyperpath_cost - linkset.hyperpath_cost_) > 0.0001)
+			{
+				std::ostringstream oss;
+				oss << " (hp cost " << std::setprecision(6) << std::fixed << linkset.hyperpath_cost_ << "->" << hyperpath_cost << ")";
+				notes                   += oss.str();
+				update_state             = true;
+				linkset.hyperpath_cost_  = hyperpath_cost;
+			}
 
-        // log it
-        if (path_spec.trace_) {
-            trace_file << "  + new ";
-            Hyperlink::printStopState(trace_file, stop_id_, linkset.stop_state_map_[ssk], path_spec, pf);
-            trace_file << notes << std::endl;
+			// updating probabilities
+			setupProbabilities(path_spec, trace_file, pf, isTrip(ssk.deparr_mode_));
+
+			// log it
+			if (path_spec.trace_) {
+				trace_file << "  + new ";
+				Hyperlink::printStopState(trace_file, stop_id_, linkset.stop_state_map_[ssk], path_spec, pf);
+				trace_file << notes << std::endl;
+			}
         }
 
         // updateLowCostPath(ssk, prev_link, trace_file, path_spec, pf);
@@ -668,7 +701,6 @@ namespace fasttrips {
 
         // recalculate this
         linkset.sum_exp_cost_ = 0;
-
         for (StopStateMap::const_iterator ssm_iter = linkset.stop_state_map_.begin(); ssm_iter != linkset.stop_state_map_.end(); ++ssm_iter)
         {
             const StopStateKey& ssk = ssm_iter->first;
@@ -777,19 +809,20 @@ namespace fasttrips {
 
                 // calculating denominator
                 ss.cum_prob_i_ = 0;
-                sum_exp += exp(-1.0*ss.cost_);
+                sum_exp += exp(-1.0*ss.cost_*0.02);
                 valid_links += 1;
             }
             else
             {
-                // infinite cost
+                /*
+            	// infinite cost
                 if (ss.cost_ >= fasttrips::MAX_COST) {
                     // leave it as is -- invalid -- but still log it
                 }
                 else {
                     // we have no additional information so we trust the hyperpath cost and can go ahead
-                    ss.probability_ = exp(-1.0*ss.cost_/STOCH_DISPERSION_) /
-                                      exp(-1.0*linkset.hyperpath_cost_/STOCH_DISPERSION_);
+                    ss.probability_ = exp(-1.0*0.02*ss.cost_/STOCH_DISPERSION_) /
+                                      exp(-1.0*0.02*linkset.hyperpath_cost_/STOCH_DISPERSION_);
                     // this will be true if it's not a real number -- e.g. the denom was too small and we ended up doing 0/0
                     if (ss.probability_ != ss.probability_) {
                         ss.probability_ = 0;
@@ -803,6 +836,18 @@ namespace fasttrips {
                         linkset.max_cum_prob_i_ = ss.cum_prob_i_;
                     }
                 }
+                */
+
+                if (ss.cost_ >= fasttrips::MAX_COST) {
+                    // leave it as is -- invalid -- but still log it
+                }
+                else {
+                    // calculating denominator
+                    ss.cum_prob_i_ = 0;
+                    sum_exp += exp(-1.0*ss.cost_*0.02);
+                    valid_links += 1;
+                }
+
 
                 // these are ready to log
                 D_PROBS(
@@ -819,7 +864,7 @@ namespace fasttrips {
         if (valid_links == 0) { return linkset.max_cum_prob_i_; }
 
         // this set is ready
-        if (path_so_far == NULL) { return linkset.max_cum_prob_i_; }
+        //if (path_so_far == NULL) { return linkset.max_cum_prob_i_; }
 
         // fail -- nothing is valid because costs are too big
         if ((valid_links != 1) && (log(sum_exp) != log(sum_exp))) {
@@ -840,12 +885,16 @@ namespace fasttrips {
                 linkset.max_cum_prob_i_ = ss.cum_prob_i_;
             }
             else {
-                ss.probability_ = exp(-1.0*ss.cost_) / sum_exp;
-                int prob_i      = static_cast<int>(RAND_MAX*ss.probability_);
-
-                // make cum_prob_i_ cumulative
-                ss.cum_prob_i_          = linkset.max_cum_prob_i_ + prob_i;
-                linkset.max_cum_prob_i_ = ss.cum_prob_i_;
+                ss.probability_ = exp(-1.0*ss.cost_*0.02) / sum_exp;
+                // this will be true if it's not a real number -- e.g. the denom was too small and we ended up doing 0/0
+                if (ss.probability_ != ss.probability_) {
+                    ss.probability_ = 0;
+                } else {
+                	int prob_i      = static_cast<int>(RAND_MAX*ss.probability_);
+                	// make cum_prob_i_ cumulative
+                	ss.cum_prob_i_          = linkset.max_cum_prob_i_ + prob_i;
+                	linkset.max_cum_prob_i_ = ss.cum_prob_i_;
+                }
             }
 
             // ready to log
